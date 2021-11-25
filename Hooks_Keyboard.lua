@@ -220,6 +220,10 @@ AutoCategory.lastScrollDataSize = 0
 local function prehookSort(self, inventoryType) 
 	-- d("[AUTO-CAT] -> prehookSort ("..inventoryType.." - "..tostring(AutoCategory.Enabled)..") <-- START")
 	if not AutoCategory.Enabled then return false end -- reverse to default behavior if disabled: default ApplySort() function is used
+	if PersonalAssistant and PersonalAssistant.Banking and PersonalAssistant.Banking.isBankItemTransferBlocked then -- PABanking is transfering -> exit and prevent running ApplySort()
+		AutoCategory.hookUpdateHash = "PAB-refresh"
+		return true 
+	end 
 	if inventoryType == INVENTORY_QUEST_ITEM then return false end  -- reverse to default behavior if quest item tab opened
 
 	local inventory, scrollData, headersAlreadyProcessed, bagId, bagTypeId, filterType, selectTabType = getSortInitValues(self, inventoryType)
@@ -248,8 +252,6 @@ local function prehookSort(self, inventoryType)
 	
 	-- build a hash with bag, filter and sort identifiers, so it detects any changes and triggers a full rule rerun. 
 	local newHash = table.concat({tostring(bagId), tostring(bagTypeId), tostring(inventory.currentFilter), tostring(inventory.currentSortKey), tostring(inventory.currentSortOrder), tostring(self.selectedTabType)}, ":") 
-	handleRules(scrollData, newHash, false)
-
 	if not handleRules(scrollData, newHash, false) and headersAlreadyProcessed then return false end -- no entry updated and categories already present in scrollData -> exit, default ApplySort() function is applied with custom sort function
 
 	local category_list = {} -- keep track of categories added and their item count
@@ -311,8 +313,6 @@ local function prehookCraftSort(self)
 
 	-- build a hash with bag, filter and sort identifiers, so it detects any changes and triggers a rules rerun. 
 	local newHash = table.concat({tostring(bagId), tostring(bagTypeId), tostring(self.filterType)}, ":") 
-	handleRules(scrollData, newHash, true)
-
 	if not handleRules(scrollData, newHash, true) and headersAlreadyProcessed then return false end -- no entry updated and categories already present in scrollData -> exit, default ApplySort() function is applied with custom sort function
 
 	local category_list = {} -- keep track of categories added and their item count
@@ -331,6 +331,12 @@ end
 local function forceInventoryRefresh()
 	AutoCategory.hookUpdateHash = "force_refresh" -- trigger rules execution on next sort hook
 	PLAYER_INVENTORY:UpdateList(INVENTORY_BACKPACK, true)-- trigger sort for backpack as opening/closing it does not trigger sort
+end
+
+local function forceInventoryBankRefresh()
+	AutoCategory.hookUpdateHash = "force_refresh_bank" -- trigger rules execution on next sort hook
+	PLAYER_INVENTORY:UpdateList(INVENTORY_BACKPACK, true)-- trigger sort for backpack as opening/closing it does not trigger sort
+	PLAYER_INVENTORY:UpdateList(INVENTORY_BANK, true) 
 end
 
 local function preHookOnInventorySlotUpdated(self, bagId, slotIndex)
@@ -379,5 +385,9 @@ function AutoCategory.HookKeyboardMode()
 		ZO_PostHook(AG, "handlePostChangeGearSetItems", forceInventoryRefresh)
 		ZO_PostHook(AG, "LoadProfile", forceInventoryRefresh)
 	end -- AlphaGear item change
+
+	if PersonalAssistant and PersonalAssistant.Banking then
+		ZO_PostHook(PersonalAssistant.Banking.KeybindStrip, "updateBankKeybindStrip", forceInventoryBankRefresh)
+	end
 end
 
