@@ -594,8 +594,8 @@ EVENT_MANAGER:RegisterForEvent(AutoCategory.name, EVENT_ADD_ON_LOADED, AutoCateg
 --== Interface ==--
 function AutoCategory.RefreshCurrentList()
     local function RefreshList(inventoryType)
-        local UPDATE_IF_NOT_HIDDEN = false
-        PLAYER_INVENTORY:UpdateList(inventoryType, UPDATE_IF_NOT_HIDDEN)
+        local UPDATE_IF_HIDDEN = true
+        PLAYER_INVENTORY:UpdateList(inventoryType, UPDATE_IF_HIDDEN)
     end
 
     if not ZO_PlayerInventory:IsHidden() then
