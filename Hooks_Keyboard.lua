@@ -188,7 +188,7 @@ local function prehookSort(self, inventoryType)
 		--only match items(not headers)
 		if entry.typeId ~= CATEGORY_HEADER then
 			local slotData = entry.data
-			local matched, categoryName, categoryPriority, bagTypeId, isHidden = 	AutoCategory:MatchCategoryRules(slotData.bagId, slotData.slotIndex)
+			local matched, categoryName, categoryPriority, bagTypeId, isHidden = AutoCategory:MatchCategoryRules(slotData.bagId, slotData.slotIndex)
 			if not matched or not AutoCategory.Enabled then
 				entry.bestItemTypeName = AutoCategory.acctSaved.appearance["CATEGORY_OTHER_TEXT"] 
 				entry.sortPriorityName = string.format("%03d%s", 999 , categoryName) 
@@ -378,7 +378,7 @@ function AutoCategory.HookKeyboardMode()
     AddTypeToList(rowHeight, SMITHING.deconstructionPanel.inventory.list, nil)
     AddTypeToList(rowHeight, SMITHING.improvementPanel.inventory.list, nil)
 	
-	ZO_PreHook(ZO_InventoryManager, "ApplySort", prehookSort)
+	--ZO_PreHook(ZO_InventoryManager, "ApplySort", prehookSort)
 	ZO_PreHook(PLAYER_INVENTORY, "ApplySort", prehookSort)
 	
     ZO_PreHook(SMITHING.deconstructionPanel.inventory, "SortData", prehookCraftSort)

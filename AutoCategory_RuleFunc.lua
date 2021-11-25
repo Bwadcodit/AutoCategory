@@ -328,7 +328,7 @@ local traitMap = {
 	["armor_vigorous"] = ITEM_TRAIT_TYPE_ARMOR_VIGOROUS,
 	["armor_well_fitted"] = ITEM_TRAIT_TYPE_ARMOR_WELL_FITTED,
 	["deprecated"] = ITEM_TRAIT_TYPE_DEPRECATED,
-	["jewelry_aggressive"] = ITEM_TRAIT_TYPE_JEWELRY_AGRESSIVE,
+	["jewelry_aggressive"] = ITEM_TRAIT_TYPE_JEWELRY_AGGRESSIVE,
 	["jewelry_arcane"] = ITEM_TRAIT_TYPE_JEWELRY_ARCANE,
 	["jewelry_augmented"] = ITEM_TRAIT_TYPE_JEWELRY_AUGMENTED,
    	["jewelry_bloodthirsty"] = ITEM_TRAIT_TYPE_JEWELRY_BLOODTHIRSTY,
@@ -480,6 +480,11 @@ local function isKnown(arg, typekey, fn, map)
 end
  
 local L = GetString
+function AutoCategory.RuleFunc.CurrentZone()
+	local fn = "zone"
+    return ZO_CachedStrFormat("<<C:1>>", GetZoneNameByIndex(GetCurrentMapZoneIndex()))
+end
+
 function AutoCategory.RuleFunc.SpecializedItemType( ... )
 	local fn = "type"
 	local ac = select( '#', ... )
@@ -505,6 +510,35 @@ function AutoCategory.RuleFunc.SpecializedItemType( ... )
 	return false
 	
 end
+
+-- name of item matches one of the specified names
+-- returns true/false
+function AutoCategory.RuleFunc.IsInCurrentZone( ... )
+	local fn = "isinzone"
+	
+	local itemLink = GetItemLink(AutoCategory.checkingItemBagId, AutoCategory.checkingItemSlotIndex)
+	--local hasSet, setName = GetItemLinkSetInfo(itemLink)
+	local itemName = string.lower(GetItemLinkName(itemLink))
+	
+	local logger = LibDebugLogger("AutoCategory")
+	--logger:SetEnabled(true)
+	local zoneName = string.lower(ZO_CachedStrFormat("<<C:1>>", GetZoneNameByIndex(GetCurrentMapZoneIndex())))
+	--logger:Error("AC itemName="..itemName.."   zoneName="..zoneName)
+	if( string.find(zoneName,"alik'r") ~= nil ) then
+		-- because maps never say "Alik'r Desert"
+		zoneName = "alik'r"	
+	    --logger:Error("AC 2 itemName="..itemName.."   zoneName="..zoneName)
+	end
+	
+	if string.find(itemName,zoneName) ~= nil then
+		--logger:Error("AC itemName="..itemName.."   found in zoneName="..zoneName)
+		--logger:SetEnabled(false)
+	    return true
+	end
+	--logger:SetEnabled(false)
+	return false
+end
+
 
 function AutoCategory.RuleFunc.ItemType( ... )
 	local fn = "type"
@@ -944,7 +978,7 @@ function AutoCategory.RuleFunc.AutoSetName( ... )
 	setName = string.gsub( setName , "%^.*", "")
 	
 	-- add in the category (set name) if necessary and assign item to it
-	AutoCategory.AdditionCategoryName = AutoCategory.AdditionCategoryName .. string.format(" (%s)", setName)
+	AutoCategory.AdditionCategoryName = setName
 	return true
 end
 
@@ -1217,8 +1251,7 @@ function AutoCategory.RuleFunc.AlphaGear( ... )
 			for slot = 1,14 do
 				if AG.setdata[AG.setdata[nr].Set.gear].Gear[slot].id == uid then
 					local setName = AG.setdata[nr].Set.text[1]
-					AutoCategory.AdditionCategoryName = AutoCategory.AdditionCategoryName .. string.format(" (%s)", setName)
-	
+					AutoCategory.AdditionCategoryName = setName	
 					return true
 				end
 			end
@@ -1416,6 +1449,7 @@ end
 
 AutoCategory.Environment = {
 	-- rule functions
+	zone       = AutoCategory.RuleFunc.CurrentZone,
 	
 	-- -------------------------------------------
 	-- types of items	
@@ -1467,6 +1501,7 @@ AutoCategory.Environment = {
 	istransmuted   = AutoCategory.RuleFunc.isTransmuted,
 	
 	istreasure     = AutoCategory.RuleFunc.IsTreasure,
+	isinzone       = AutoCategory.RuleFunc.IsInCurrentZone,
 
 	-- -------------------------------------------
 	-- values of items (returns values rather than true/false)

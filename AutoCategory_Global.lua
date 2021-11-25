@@ -9,7 +9,7 @@ local SF = LibSFUtils
  
 AutoCategory = {
     name = "AutoCategory",
-    version = "2.20",
+    version = "2.29",
     settingName = "AutoCategory",
     settingDisplayName = "AutoCategory - Revised",
     author = "Shadowfen, crafty35, RockingDice, Friday_the13_rus",
@@ -36,12 +36,12 @@ function AutoCategory.checkLibraryVersions()
     local vc = SF.VersionChecker(addonName)
     local logger = LibDebugLogger.Create(addonName)
     vc:Enable(logger)
-    vc:CheckVersion("LibAddonMenu-2.0", 30)
-    vc:CheckVersion("LibMediaProvider-1.0", 12)
-    vc:CheckVersion("LibSFUtils", 23)
-    vc:CheckVersion("LibDebugLogger",128)
+    vc:CheckVersion("LibAddonMenu-2.0", 32)
+    vc:CheckVersion("LibMediaProvider-1.0", 18)
+    vc:CheckVersion("LibSFUtils", 32)
+    vc:CheckVersion("LibDebugLogger",217)
     
     if UnknownTracker then
-        vc:CheckVersion("UnknownTracker",64)
+        vc:CheckVersion("UnknownTracker",71)
     end
 end
