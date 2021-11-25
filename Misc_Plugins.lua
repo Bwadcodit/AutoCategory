@@ -114,44 +114,76 @@ end
 
 -- Implement alphagear() check function for Alpha Gear
 function AutoCategory_MiscAddons.RuleFunc.AlphaGear( ... ) 
-	if not (AG ) then
+	if not AG or not AG.setdata or not AG.setdata.profiles then
 		return false
 	end
 	local fn = "alphagear"
 	local ac = select( '#', ... )
-	if ac == 0 then
-		error( string.format("error: %s(): require arguments." , fn))
-	end
+	-- if ac == 0 then
+	-- 	error( string.format("error: %s(): require arguments." , fn))
+	-- end
 	
 	local uid = Id64ToString(GetItemUniqueId(AC.checkingItemBagId, AC.checkingItemSlotIndex))
 	if not uid then return false end
 
-	for ax = 1, ac do 
+	local profileSortKeysList = {}
+	for ax = 1, ac do -- store parameters in profileSortKeysList
 		local arg = select( ax, ... )
-		local comIndex = -1
+		local profileSortKey = nil
 		if not arg then
 			error( string.format("error: %s():  argument is nil." , fn))
 		end
 		if type( arg ) == "number" then
-			comIndex = arg
+			profileSortKey = tostring(arg)
 		elseif type( arg ) == "string" then
-			comIndex = tonumber(arg)
+			profileSortKey = arg
 		else
 			error( string.format("error: %s(): argument is error." , fn ) )
 		end
-		
-		local nr = comIndex
-		if AG.setdata[nr].Set.gear > 0 then
-			for slot = 1,14 do
-				if AG.setdata[AG.setdata[nr].Set.gear].Gear[slot].id == uid then
-					local setName = AG.setdata[nr].Set.text[1]
-					AutoCategory.AdditionCategoryName = setName
-					return true
+
+		table.insert(profileSortKeysList, profileSortKey)
+	end
+
+	if #profileSortKeysList == 0 then -- if no parameters, find all profileSortKeys and sort them
+		for profileId, profile in ipairs(AG.setdata.profiles) do
+			if profile and profile.setdata then
+				local profileSortKey = profile.sortKey
+				if profileSortKey and profileSortKey ~= "" then
+					table.insert(profileSortKeysList, profileSortKey)
 				end
 			end
-		end 
+		end
+		table.sort(profileSortKeysList)
 	end
-	
+
+	for _, profileSortKey in ipairs(profileSortKeysList) do
+		for profileId, profile in ipairs(AG.setdata.profiles) do
+			if profile and profile.setdata and profile.sortKey == profileSortKey then
+				for buildId, build in ipairs(profile.setdata) do
+					if build and build.Set and build.Set.gear and (build.Set.gear > 0) and profile.setdata[build.Set.gear] then
+						local gear = profile.setdata[build.Set.gear].Gear
+						if gear then
+							for slot = 1, 14 do
+								if gear[slot] and gear[slot].id == uid then
+									local profileName = profile.name
+									if not profileName or (profileName == "") then profileName = "Profile "..tostring(profileId) end
+									if AG.setdata.currentProfileId == profileId then
+										local buildName = build.Set.text[1]
+										if not buildName or (buildName == "") then buildName = "Build "..tostring(buildId) end
+										AutoCategory.AdditionCategoryName = profileName.." - "..buildName
+									else
+										AutoCategory.AdditionCategoryName = profileName
+									end
+									return true
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
 	return false 
 end
 
