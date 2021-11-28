@@ -133,13 +133,14 @@ local function isHiddenEntry(itemEntry)
 	return itemEntry.data.AC_isHidden or (itemEntry.data.AC_bagTypeId ~= nil and ((not matched and isUngroupedHidden(itemEntry.data.AC_bagTypeId)) or AutoCategory.IsCategoryCollapsed(itemEntry.data.AC_bagTypeId, itemEntry.data.AC_categoryName)))
 end
 
-local function createHeaderEntry(itemEntry)
+local function createHeaderEntry(itemEntry, reuseCount)
 	local headerEntry = ZO_ScrollList_CreateDataEntry(CATEGORY_HEADER, {bestItemTypeName = itemEntry.data.AC_categoryName, stackLaunderPrice = 0})
 	headerEntry.data.AC_categoryName = itemEntry.data.AC_categoryName
 	headerEntry.data.AC_sortPriorityName = itemEntry.data.AC_sortPriorityName
 	headerEntry.data.AC_isHeader = true
 	headerEntry.data.AC_bagTypeId = itemEntry.data.AC_bagTypeId
-	headerEntry.data.AC_catCount = 1
+	if reuseCount then headerEntry.data.AC_catCount = itemEntry.data.AC_catCount
+	else headerEntry.data.AC_catCount = 1 end
 	return headerEntry
 end
 
@@ -147,24 +148,24 @@ end
 local function handleRules(scrollData, newHash, isAtCraftStation)
 	local hasUpdated = false
 	local reloadAll = false
-	if newHash ~= AutoCategory.hookUpdateHash then
-		-- d("[AUTO-CAT] reloading all: "..tostring(AutoCategory.hookUpdateHash).." -> "..tostring(newHash))
-		AutoCategory.hookUpdateHash = newHash
+	if newHash ~= AutoCategory.hookUpdateHash then -- test if changes detected
+		--d("[AUTO-CAT] reloading all: "..tostring(AutoCategory.hookUpdateHash).." -> "..tostring(newHash))
+		AutoCategory.hookUpdateHash = newHash -- reset hash for next hook
 		reloadAll = true
 	end
 	for _, entry in ipairs(scrollData) do
-		if entry.typeId ~= CATEGORY_HEADER then
-			if reloadAll or (entry.data.AC_categoryName == nil) then 
+		if isAtCraftStation then entry.data.AC_bagTypeId = AutoCategory.convert2BagTypeId(entry.data.bagId, AC_BAG_TYPE_CRAFTSTATION) end -- need to enforce this value at craft stations, as it is not persistent
+		if entry.typeId ~= CATEGORY_HEADER then -- headers are not matched with rules
+			if reloadAll or isAtCraftStation or (entry.data.AC_categoryName == nil) then -- full reload triggered or item has nothing loaded. Also at craft stations scrollData seems to be reseted every time, so need to reload all rules
 				hasUpdated = true
 				loadRulesResult(entry, isAtCraftStation)
 			else
 				for _, uniqueId in ipairs(AutoCategory.uniqueIdsToUpdate) do
 					if entry.data.uniqueId == uniqueId then
-						-- d("[AUTO-CAT] reloading: "..tostring(entry.data.name))
+						--d("[AUTO-CAT] reloading: "..tostring(entry.data.name))
 						hasUpdated = true
 						loadRulesResult(entry, isAtCraftStation)
-						break
-					end
+					end -- does not break in case there is several slots with same uniqueId
 				end
 			end
 		end
@@ -176,13 +177,35 @@ end
 -- Create new category or update existing. Return created category, or nil.
 local function handleCategory(category_list, itemEntry)
 	local categoryName = itemEntry.data.AC_categoryName
-	if category_list[categoryName] == nil and (itemEntry.data.AC_matched or not isUngroupedHidden(itemEntry.data.AC_bagTypeId)) then -- first time seeing this category name, and ungrouped not hidden -> create new header
-		category_list[categoryName] = createHeaderEntry(itemEntry)
-		return category_list[categoryName]
-	elseif category_list[categoryName] ~= nil then -- header already existing -> increment category count
+	if category_list[categoryName] == nil then -- first time seeing this category name -> create new header
+		if itemEntry.typeId == CATEGORY_HEADER then -- a category header already existing in scrollData
+			if AutoCategory.IsCategoryCollapsed(itemEntry.data.AC_bagTypeId, categoryName) then -- the category is collapsed -> matching items are not contained in scrollData input -> reuse previous count
+				category_list[categoryName] = createHeaderEntry(itemEntry, true)
+				return category_list[categoryName]
+			else --> category not collapsed, do not create header here, will recount items and recreate
+				return nil
+			end
+		elseif itemEntry.data.AC_matched or not isUngroupedHidden(itemEntry.data.AC_bagTypeId) then --> regular item, not ungrouped and hidden
+			category_list[categoryName] = createHeaderEntry(itemEntry) -- new header, new count
+			return category_list[categoryName]
+		end
+	elseif itemEntry.typeId ~= CATEGORY_HEADER then -- header already existing -> increment category count if this is not a header
 		category_list[categoryName].data.AC_catCount = category_list[categoryName].data.AC_catCount + 1
 	end
 	return nil
+end
+
+local function createNewScrollData(scrollData)
+	local category_list = {} -- keep track of categories added and their item count
+	local newScrollData = {} -- output, entries sorted with category headers
+	for _, entry in ipairs(scrollData) do -- create newScrollData with headers and only non hidden items
+		if entry.typeId ~= CATEGORY_HEADER then
+			if not isHiddenEntry(entry) then table.insert(newScrollData, entry) end -- add entry if visible
+		end
+		table.insert(newScrollData, handleCategory(category_list, entry)) -- add header or update header count
+	end
+	AutoCategory.lastNewScrollDataSize = #newScrollData
+	return newScrollData
 end
 
 local function getInventory(objectTable, inventoryType)
@@ -205,30 +228,29 @@ local function getSortInitValues(objectTable, inventoryType)
 		if bagId == nil and entry.data.bagId ~= nil then
 			bagId = entry.data.bagId
 		end
-		if (#scrollData == AutoCategory.lastScrollDataSize) and (entry.typeId == CATEGORY_HEADER) then
+		if (#scrollData == AutoCategory.lastNewScrollDataSize) and (entry.typeId == CATEGORY_HEADER) then
 			headersAlreadyProcessed = true -- a header existing here means the scroll data is untouched since last sort
 		end
 		if headersAlreadyProcessed and bagId ~= nil then break end
 	end
-	AutoCategory.lastScrollDataSize = #scrollData
 	return  inventory, scrollData, headersAlreadyProcessed, bagId, AutoCategory.convert2BagTypeId(bagId), inventory.currentFilter, objectTable.selectedTabType
 end
 
 AutoCategory.hookUpdateHash = nil -- a hash representing the last 'state', so changes can be detected. Use bag, filter and sorting infos.
 AutoCategory.uniqueIdsToUpdate = {}
-AutoCategory.lastScrollDataSize = 0
+AutoCategory.lastNewScrollDataSize = 0
 local function prehookSort(self, inventoryType) 
-	-- d("[AUTO-CAT] -> prehookSort ("..inventoryType.." - "..tostring(AutoCategory.Enabled)..") <-- START")
+	--d("[AUTO-CAT] -> prehookSort ("..inventoryType.." - "..tostring(AutoCategory.Enabled)..") <-- START")
 	if not AutoCategory.Enabled then return false end -- reverse to default behavior if disabled: default ApplySort() function is used
 	if PersonalAssistant and PersonalAssistant.Banking and PersonalAssistant.Banking.isBankItemTransferBlocked then -- PABanking is transfering -> exit and prevent running ApplySort()
-		AutoCategory.hookUpdateHash = "PAB-refresh"
+		AutoCategory.hookUpdateHash = "PAB-refresh" -- change hash to trigger refresh
 		return true 
 	end 
 	if inventoryType == INVENTORY_QUEST_ITEM then return false end  -- reverse to default behavior if quest item tab opened
 
 	local inventory, scrollData, headersAlreadyProcessed, bagId, bagTypeId, filterType, selectTabType = getSortInitValues(self, inventoryType)
 
-	if #scrollData == 0 then return false end
+	if #scrollData == 0 then return false end -- empty inventory -> revert to default behavior
 
 	inventory.sortFn =  function(left, right) -- set new inventory sort function
 		if AutoCategory.Enabled then
@@ -249,21 +271,15 @@ local function prehookSort(self, inventoryType)
 		end
 		return ZO_TableOrderingFunction(left.data, right.data, inventory.currentSortKey, sortKeys, inventory.currentSortOrder)
 	end
-	
+
 	-- build a hash with bag, filter and sort identifiers, so it detects any changes and triggers a full rule rerun. 
 	local newHash = table.concat({tostring(bagId), tostring(bagTypeId), tostring(inventory.currentFilter), tostring(inventory.currentSortKey), tostring(inventory.currentSortOrder), tostring(self.selectedTabType)}, ":") 
 	if not handleRules(scrollData, newHash, false) and headersAlreadyProcessed then return false end -- no entry updated and categories already present in scrollData -> exit, default ApplySort() function is applied with custom sort function
 
-	local category_list = {} -- keep track of categories added and their item count
-	local newScrollData = {} -- output, entries sorted with category headers
-	for _, entry in ipairs(scrollData) do -- create newScrollData with headers and only non hidden items 
-		if entry.typeId ~= CATEGORY_HEADER then
-			if not isHiddenEntry(entry) then table.insert(newScrollData, entry) end -- add entry if visible
-			table.insert(newScrollData, handleCategory(category_list, entry)) -- add header or update header count
-		end
-	end
-	-- d("[AUTO-CAT] END - "..tostring(#scrollData).." -> "..tostring(#newScrollData))
-	inventory.listView.data = newScrollData 
+	local newScrollData = createNewScrollData(scrollData)
+
+	--d("[AUTO-CAT] END ("..tostring(headersAlreadyProcessed)..") - "..tostring(#scrollData).." -> "..tostring(#newScrollData))
+	inventory.listView.data = newScrollData
 end
 
 -- return scrollData, headersAlreadyProcessed, bagId, bagTypeId
@@ -274,20 +290,20 @@ local function getCraftSortInitValues(objectTable)
 		if bagId == nil and entry.data.bagId ~= nil then
 			bagId = entry.data.bagId
 		end
-		if (#scrollData == AutoCategory.lastScrollDataSize) and (entry.typeId == CATEGORY_HEADER) then
+		if (#scrollData == AutoCategory.lastNewScrollDataSize) and (entry.typeId == CATEGORY_HEADER) then
 			headersAlreadyProcessed = true -- a header existing here means the scroll data is untouched since last sort
 		end
 		if headersAlreadyProcessed and bagId ~= nil then break end
 	end
-	AutoCategory.lastScrollDataSize = #scrollData
 	return  scrollData, headersAlreadyProcessed, bagId, AutoCategory.convert2BagTypeId(bagId, AC_BAG_TYPE_CRAFTSTATION)
 end
 
 local function prehookCraftSort(self)
+	--d("[AUTO-CAT] -> prehookCraftSort ("..tostring(AutoCategory.Enabled)..") <-- START")
 	if not AutoCategory.Enabled then return false end -- reverse to default behavior if disabled
 	local scrollData, headersAlreadyProcessed, bagId, bagTypeId = getCraftSortInitValues(self)
 
-	if #scrollData == 0 then return false end
+	if #scrollData == 0 then return false end -- empty inventory -> revert to default behavior
 
 	--change sort function
 	--self.sortFunction = function(left,right) sortInventoryFn(self,left,right) end
@@ -315,14 +331,8 @@ local function prehookCraftSort(self)
 	local newHash = table.concat({tostring(bagId), tostring(bagTypeId), tostring(self.filterType)}, ":") 
 	if not handleRules(scrollData, newHash, true) and headersAlreadyProcessed then return false end -- no entry updated and categories already present in scrollData -> exit, default ApplySort() function is applied with custom sort function
 
-	local category_list = {} -- keep track of categories added and their item count
-	local newScrollData = {} -- output, entries sorted with category headers
-	for i, entry in ipairs(scrollData) do
-		if entry.typeId ~= CATEGORY_HEADER then
-			if not isHiddenEntry(entry) then table.insert(newScrollData, entry) end -- add entry if visible
-			table.insert(newScrollData, handleCategory(category_list, entry)) -- add header or update header count
-		end
-	end
+	local newScrollData = createNewScrollData(scrollData)
+
 	table.sort(newScrollData, self.sortFunction)
 	self.list.data = newScrollData  
 end
@@ -375,8 +385,8 @@ function AutoCategory.HookKeyboardMode()
     ZO_PreHook(SMITHING.improvementPanel.inventory, "SortData", prehookCraftSort)
 	
 	-- changes detection hook (rules results may have changed)
-	ZO_PreHook(PLAYER_INVENTORY, "OnInventorySlotUpdated", preHookOnInventorySlotUpdated) -- items has been changed -- weirdly here ZO_PostHook does not gives good result but ZO_PreHook does
-	ZO_PreHook(ZO_QuickslotManager, "DoQuickSlotUpdate", preHookDoQuickSlotUpdate) -- quick slots updated
+	ZO_PreHook(PLAYER_INVENTORY, "OnInventorySlotUpdated", preHookOnInventorySlotUpdated) -- items has been changed
+	-- ZO_PreHook(ZO_QuickslotManager, "DoQuickSlotUpdate", preHookDoQuickSlotUpdate) -- quick slots updated
 	EVENT_MANAGER:RegisterForEvent(AutoCategory.name, EVENT_STACKED_ALL_ITEMS_IN_BAG, forceInventoryRefresh)
 
 	CALLBACK_MANAGER:RegisterCallback("LAM-PanelClosed", preHookLAMPanelClosed) -- AddonMenu panel closed (AC settings may have changed)
