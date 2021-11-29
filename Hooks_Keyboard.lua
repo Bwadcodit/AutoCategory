@@ -18,6 +18,11 @@ local sortKeys = {
 
 local CATEGORY_HEADER = 998
 
+-- global variables used by sort hooks for change detection
+AutoCategory.hookUpdateHash = nil -- a hash representing the last 'state', so changes can be detected. Use bag, filter and sorting infos.
+AutoCategory.uniqueIdsToUpdate = {} -- uniqueIds of items that have been updated (need rule re-execution)
+AutoCategory.lastNewScrollDataSize = 0
+
 -- convenience function
 -- given a (supposed) table variable
 -- either return the table variable
@@ -39,6 +44,16 @@ local function NilOrLessThan(value1, value2)
         return value1 < value2
     end
 end 
+
+-- utility function: build a string with all parameters, accept any parameters.
+local function buildHashString(...)
+	local paramList = {...}
+	local hashString = ":"
+	for _, param in ipairs(paramList) do
+		hashString = hashString..tostring(param)..":"
+	end
+	return hashString
+end
 
 -- debug convenience function
 local function dTable(table, depth, name)
@@ -146,21 +161,22 @@ end
 
 -- execute rules and store result in entry.data, if needed. Return false if no entry was updated, true otherwise.
 local function handleRules(scrollData, newHash, isAtCraftStation)
-	local hasUpdated = false
-	local reloadAll = false
+	local hasUpdated = false -- indicate if at least one item has been updated with new rule results
+	local reloadAll = isAtCraftStation -- at craft stations scrollData seems to be reseted every time, so need to always reload
 	if newHash ~= AutoCategory.hookUpdateHash then -- test if changes detected
 		--d("[AUTO-CAT] reloading all: "..tostring(AutoCategory.hookUpdateHash).." -> "..tostring(newHash))
 		AutoCategory.hookUpdateHash = newHash -- reset hash for next hook
 		reloadAll = true
 	end
 	for _, entry in ipairs(scrollData) do
-		if isAtCraftStation then entry.data.AC_bagTypeId = AutoCategory.convert2BagTypeId(entry.data.bagId, AC_BAG_TYPE_CRAFTSTATION) end -- need to enforce this value at craft stations, as it is not persistent
 		if entry.typeId ~= CATEGORY_HEADER then -- headers are not matched with rules
-			if reloadAll or isAtCraftStation or (entry.data.AC_categoryName == nil) then -- full reload triggered or item has nothing loaded. Also at craft stations scrollData seems to be reseted every time, so need to reload all rules
+			local newEntryHash = buildHashString(entry.data.isPlayerLocked, entry.data.isGemmable, entry.data.stolen, entry.data.isBoPTradeable, entry.data.isInArmory, entry.data.brandNew, entry.data.bagId, entry.data.statusSortOrder, entry.data.stackCount)
+			if reloadAll or (entry.data.AC_categoryName == nil) or (newEntryHash ~= entry.data.AC_hash) then -- reload rules if full reload triggered, hash has changed, or item has nothing loaded
+				entry.data.AC_hash = newEntryHash
 				hasUpdated = true
 				loadRulesResult(entry, isAtCraftStation)
 			else
-				for _, uniqueId in ipairs(AutoCategory.uniqueIdsToUpdate) do
+				for _, uniqueId in ipairs(AutoCategory.uniqueIdsToUpdate) do -- look for items with changes detected
 					if entry.data.uniqueId == uniqueId then
 						--d("[AUTO-CAT] reloading: "..tostring(entry.data.name))
 						hasUpdated = true
@@ -208,37 +224,6 @@ local function createNewScrollData(scrollData)
 	return newScrollData
 end
 
-local function getInventory(objectTable, inventoryType)
-	if objectTable == nil then objectTable = PLAYER_INVENTORY end
-	local inventory = objectTable.inventories[inventoryType]
-	if inventory == nil then
-		-- Use normal inventory by default (instead of the quest item inventory for example)
-		inventory = objectTable.inventories[objectTable.selectedTabType]
-	end
-	return inventory
-end
-
--- return inventoryTable, scrollData, headersAlreadyProcessed, bagId, bagTypeId, filterType, selectTabType
-local function getSortInitValues(objectTable, inventoryType)
-	local inventory = getInventory(objectTable, inventoryType)
-	if not inventory then return nil, nil, nil, 0, 1 end
-	local scrollData = ZO_ScrollList_GetDataList(inventory.listView)
-	local bagId, bagTypeId, headersAlreadyProcessed = nil, nil, false
-	for _, entry in ipairs(scrollData) do
-		if bagId == nil and entry.data.bagId ~= nil then
-			bagId = entry.data.bagId
-		end
-		if (#scrollData == AutoCategory.lastNewScrollDataSize) and (entry.typeId == CATEGORY_HEADER) then
-			headersAlreadyProcessed = true -- a header existing here means the scroll data is untouched since last sort
-		end
-		if headersAlreadyProcessed and bagId ~= nil then break end
-	end
-	return  inventory, scrollData, headersAlreadyProcessed, bagId, AutoCategory.convert2BagTypeId(bagId), inventory.currentFilter, objectTable.selectedTabType
-end
-
-AutoCategory.hookUpdateHash = nil -- a hash representing the last 'state', so changes can be detected. Use bag, filter and sorting infos.
-AutoCategory.uniqueIdsToUpdate = {}
-AutoCategory.lastNewScrollDataSize = 0
 local function prehookSort(self, inventoryType) 
 	--d("[AUTO-CAT] -> prehookSort ("..inventoryType.." - "..tostring(AutoCategory.Enabled)..") <-- START")
 	if not AutoCategory.Enabled then return false end -- reverse to default behavior if disabled: default ApplySort() function is used
@@ -248,9 +233,26 @@ local function prehookSort(self, inventoryType)
 	end 
 	if inventoryType == INVENTORY_QUEST_ITEM then return false end  -- reverse to default behavior if quest item tab opened
 
-	local inventory, scrollData, headersAlreadyProcessed, bagId, bagTypeId, filterType, selectTabType = getSortInitValues(self, inventoryType)
+	local inventory = self.inventories[inventoryType]
+	if inventory == nil then
+		-- Use normal inventory by default (instead of the quest item inventory for example)
+		inventory = self.inventories[self.selectedTabType]
+	end
 
+	local scrollData = ZO_ScrollList_GetDataList(inventory.listView)
 	if #scrollData == 0 then return false end -- empty inventory -> revert to default behavior
+
+	local scrollDataHasChanged = (#scrollData ~= AutoCategory.lastNewScrollDataSize) -- scroll data is new if size changed
+	if not scrollDataHasChanged then
+		local headerFound = false
+		for _, entry in ipairs(scrollData) do
+			if entry.typeId == CATEGORY_HEADER then
+				headerFound = true -- a header existing here means the scroll data is untouched since last sort
+				break
+			end
+		end
+		scrollDataHasChanged = not headerFound -- scroll data is new if it contains no header
+	end
 
 	inventory.sortFn =  function(left, right) -- set new inventory sort function
 		if AutoCategory.Enabled then
@@ -273,36 +275,19 @@ local function prehookSort(self, inventoryType)
 	end
 
 	-- build a hash with bag, filter and sort identifiers, so it detects any changes and triggers a full rule rerun. 
-	local newHash = table.concat({tostring(bagId), tostring(bagTypeId), tostring(inventory.currentFilter), tostring(inventory.currentSortKey), tostring(inventory.currentSortOrder), tostring(self.selectedTabType)}, ":") 
-	if not handleRules(scrollData, newHash, false) and headersAlreadyProcessed then return false end -- no entry updated and categories already present in scrollData -> exit, default ApplySort() function is applied with custom sort function
-
-	local newScrollData = createNewScrollData(scrollData)
-
-	--d("[AUTO-CAT] END ("..tostring(headersAlreadyProcessed)..") - "..tostring(#scrollData).." -> "..tostring(#newScrollData))
-	inventory.listView.data = newScrollData
-end
-
--- return scrollData, headersAlreadyProcessed, bagId, bagTypeId
-local function getCraftSortInitValues(objectTable)
-	local scrollData = ZO_ScrollList_GetDataList(objectTable.list)
-	local bagId, bagTypeId, headersAlreadyProcessed = nil, nil, false
-	for _, entry in ipairs(scrollData) do
-		if bagId == nil and entry.data.bagId ~= nil then
-			bagId = entry.data.bagId
-		end
-		if (#scrollData == AutoCategory.lastNewScrollDataSize) and (entry.typeId == CATEGORY_HEADER) then
-			headersAlreadyProcessed = true -- a header existing here means the scroll data is untouched since last sort
-		end
-		if headersAlreadyProcessed and bagId ~= nil then break end
+	local newHash = buildHashString(inventoryType, inventory.currentFilter, inventory.currentSortKey, inventory.currentSortOrder, self.selectedTabType)
+	local hasUpdated = handleRules(scrollData, newHash, false)
+	if hasUpdated or scrollDataHasChanged then -- changes detected --> rebuild scroll data with headers
+		inventory.listView.data = createNewScrollData(scrollData)
 	end
-	return  scrollData, headersAlreadyProcessed, bagId, AutoCategory.convert2BagTypeId(bagId, AC_BAG_TYPE_CRAFTSTATION)
+	--d("[AUTO-CAT] END ("..tostring(scrollDataHasChanged)..", "..tostring(hasUpdated)..") - "..tostring(#scrollData).." -> "..tostring(AutoCategory.lastNewScrollDataSize))
 end
 
 local function prehookCraftSort(self)
 	--d("[AUTO-CAT] -> prehookCraftSort ("..tostring(AutoCategory.Enabled)..") <-- START")
 	if not AutoCategory.Enabled then return false end -- reverse to default behavior if disabled
-	local scrollData, headersAlreadyProcessed, bagId, bagTypeId = getCraftSortInitValues(self)
 
+	local scrollData = ZO_ScrollList_GetDataList(self.list)
 	if #scrollData == 0 then return false end -- empty inventory -> revert to default behavior
 
 	--change sort function
@@ -327,12 +312,8 @@ local function prehookCraftSort(self)
 		return ZO_TableOrderingFunction(left.data, right.data, self.sortKey, sortKeys, self.sortOrder)
 	end
 
-	-- build a hash with bag, filter and sort identifiers, so it detects any changes and triggers a rules rerun. 
-	local newHash = table.concat({tostring(bagId), tostring(bagTypeId), tostring(self.filterType)}, ":") 
-	if not handleRules(scrollData, newHash, true) and headersAlreadyProcessed then return false end -- no entry updated and categories already present in scrollData -> exit, default ApplySort() function is applied with custom sort function
-
+	handleRules(scrollData, "craft-station", true)
 	local newScrollData = createNewScrollData(scrollData)
-
 	table.sort(newScrollData, self.sortFunction)
 	self.list.data = newScrollData  
 end
@@ -401,3 +382,55 @@ function AutoCategory.HookKeyboardMode()
 	end
 end
 
+
+--[[
+-------- HINTS FOR REFERENCE -----------
+
+In sharedInventory.lua we can see a breakdown of how slotData is build, under is a truncated summary:
+
+slot.rawName = GetItemName(bagId, slotIndex)
+slot.name = zo_strformat(SI_TOOLTIP_ITEM_NAME, slot.rawName)
+slot.requiredLevel = GetItemRequiredLevel(bagId, slotIndex)
+slot.requiredChampionPoints = GetItemRequiredChampionPoints(bagId, slotIndex)
+slot.itemType, slot.specializedItemType = GetItemType(bagId, slotIndex)
+slot.uniqueId = GetItemUniqueId(bagId, slotIndex)
+slot.iconFile = icon
+slot.stackCount = stackCount
+slot.sellPrice = sellPrice
+slot.launderPrice = launderPrice
+slot.stackSellPrice = stackCount * sellPrice
+slot.stackLaunderPrice = stackCount * launderPrice
+slot.bagId = bagId
+slot.slotIndex = slotIndex
+slot.meetsUsageRequirement = meetsUsageRequirement or (bagId == BAG_WORN)
+slot.locked = locked
+slot.functionalQuality = functionalQuality
+slot.displayQuality = displayQuality
+-- slot.quality is deprecated, included here for addon backwards compatibility
+slot.quality = displayQuality
+slot.equipType = equipType
+slot.isPlayerLocked = IsItemPlayerLocked(bagId, slotIndex)
+slot.isBoPTradeable = IsItemBoPAndTradeable(bagId, slotIndex)
+slot.isJunk = IsItemJunk(bagId, slotIndex)
+slot.statValue = GetItemStatValue(bagId, slotIndex) or 0
+slot.itemInstanceId = GetItemInstanceId(bagId, slotIndex) or nil
+slot.brandNew = isNewItem
+slot.stolen = IsItemStolen(bagId, slotIndex)
+slot.filterData = { GetItemFilterTypeInfo(bagId, slotIndex) }
+slot.condition = GetItemCondition(bagId, slotIndex)
+slot.isPlaceableFurniture = IsItemPlaceableFurniture(bagId, slotIndex)
+slot.traitInformation = GetItemTraitInformation(bagId, slotIndex)
+slot.traitInformationSortOrder = ZO_GetItemTraitInformation_SortOrder(slot.traitInformation)
+slot.sellInformation = GetItemSellInformation(bagId, slotIndex)
+slot.sellInformationSortOrder = ZO_GetItemSellInformationCustomSortOrder(slot.sellInformation)
+slot.actorCategory = GetItemActorCategory(bagId, slotIndex)
+slot.isInArmory = IsItemInArmory(bagId, slotIndex)
+slot.isGemmable = false
+slot.requiredPerGemConversion = nil
+slot.gemsAwardedPerConversion = nil
+slot.isFromCrownStore = IsItemFromCrownStore(bagId, slotIndex)
+slot.age = GetFrameTimeSeconds()
+
+slotData.statusSortOrder = self:ComputeDynamicStatusMask(slotData.isPlayerLocked, slotData.isGemmable, slotData.stolen, slotData.isBoPTradeable, slotData.isInArmory, slotData.brandNew, slotData.bagId == BAG_WORN)
+
+]]

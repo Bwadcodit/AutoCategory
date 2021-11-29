@@ -3,8 +3,7 @@
 -- Convert a ZOS bagId into AutoCategory bag_type_id
 -- returns the bag_type_id enum value 
 --       or nil if bagId is not recognized
-function AutoCategory.convert2BagTypeId(bagId, specialType)
-	if specialType then return specialType end
+local function convert2BagTypeId(bagId)
 	local bag_type_id = nil
 	if bagId == BAG_BACKPACK or bagId == BAG_WORN then
 		bag_type_id = AC_BAG_TYPE_BACKPACK
@@ -35,7 +34,12 @@ function AutoCategory:MatchCategoryRules( bagId, slotIndex, specialType )
 
 	self.checkingItemBagId = bagId
 	self.checkingItemSlotIndex = slotIndex
-	local bag_type_id = AutoCategory.convert2BagTypeId(bagId, specialType)
+	local bag_type_id
+	if specialType then
+		bag_type_id = specialType
+	else 
+		bag_type_id = convert2BagTypeId(bagId)
+	end
 	if not bag_type_id then
 		-- invalid bag
 		return false, "", 0, nil, nil
